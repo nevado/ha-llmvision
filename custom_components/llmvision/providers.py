@@ -1016,6 +1016,29 @@ class AzureOpenAI(Provider):
         return True
 
 
+def _claude_thinking_support(model: str) -> tuple[bool, bool]:
+    """Return whether a Claude model supports manual or adaptive thinking."""
+    model = model.lower()
+    version_match = re.search(
+        r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?",
+        model,
+    )
+    major = int(version_match.group(1)) if version_match else 0
+    minor = int(version_match.group(2) or 0) if version_match else 0
+    manual_thinking = (
+        "claude-3-7-sonnet" in model
+        or (major == 4 and minor <= 6)
+        or "mythos-preview" in model
+    )
+    adaptive_thinking = (
+        "fable" in model
+        or ("mythos" in model and "mythos-preview" not in model)
+        or major >= 5
+        or (major == 4 and minor >= 7)
+    )
+    return manual_thinking, adaptive_thinking
+
+
 class Anthropic(Provider):
 
     def __init__(self, hass: HomeAssistant, api_key: str, model: str):
@@ -1074,24 +1097,7 @@ class Anthropic(Provider):
             )
 
         budget = int(numeric_budget)
-        model = self.model.lower()
-        version_match = re.search(
-            r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?",
-            model,
-        )
-        major = int(version_match.group(1)) if version_match else 0
-        minor = int(version_match.group(2) or 0) if version_match else 0
-        manual_thinking = (
-            "claude-3-7-sonnet" in model
-            or (major == 4 and minor <= 6)
-            or "mythos-preview" in model
-        )
-        adaptive_thinking = (
-            "fable" in model
-            or ("mythos" in model and "mythos-preview" not in model)
-            or major >= 5
-            or (major == 4 and minor >= 7)
-        )
+        manual_thinking, adaptive_thinking = _claude_thinking_support(self.model)
         tool_choice = payload.get("tool_choice") or {}
         forced_tool = tool_choice.get("type") in {"any", "tool"}
 
@@ -1925,6 +1931,14 @@ class AWSBedrock(Provider):
             "Authorization": "Bearer " + self.api_key,
         }
 
+    def _build_inference_config(self, max_tokens: int, temperature: Any) -> dict:
+        """Build the inference config supported by the configured model."""
+        inference_config: dict = {"maxTokens": max_tokens}
+        _, adaptive_thinking = _claude_thinking_support(self.model)
+        if not adaptive_thinking:
+            inference_config["temperature"] = temperature
+        return inference_config
+
     async def _make_request(self, data: dict) -> str:
 
         if self.use_bearer_token:
@@ -2049,10 +2063,9 @@ class AWSBedrock(Provider):
         # We need to generate the correct format for the respective models
         payload = {
             "messages": [{"role": "user", "content": []}],
-            "inferenceConfig": {
-                "maxTokens": call.max_tokens,
-                "temperature": default_parameters.get("temperature"),
-            },
+            "inferenceConfig": self._build_inference_config(
+                call.max_tokens, default_parameters.get("temperature")
+            ),
         }
 
         # Bedrock converse API wants the raw bytes of the image
@@ -2124,10 +2137,9 @@ class AWSBedrock(Provider):
                 {"role": "user", "content": [{"text": title_prompt}]},
                 {"role": "user", "content": [{"text": call.message}]},
             ],
-            "inferenceConfig": {
-                "maxTokens": call.max_tokens,
-                "temperature": call.temperature,
-            },
+            "inferenceConfig": self._build_inference_config(
+                call.max_tokens, call.temperature
+            ),
         }
 
         # Add structured output support using tool definitions
@@ -2164,7 +2176,7 @@ class AWSBedrock(Provider):
     async def validate(self) -> None | ServiceValidationError:
         data = {
             "messages": [{"role": "user", "content": [{"text": "Hi"}]}],
-            "inferenceConfig": {"maxTokens": 10, "temperature": 0.5},
+            "inferenceConfig": self._build_inference_config(10, 0.5),
         }
         await self.invoke_bedrock(model=self.model, data=data)
 

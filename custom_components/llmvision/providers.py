@@ -1958,20 +1958,7 @@ class AWSBedrock(Provider):
             if not isinstance(message, dict):
                 raise ServiceValidationError("invalid_response")
 
-            # Handle tool use response for structured output
-            message_content = message.get("content") or []
-            if not isinstance(message_content, list) or len(message_content) == 0:
-                return ""
-
-            content = message_content[0]
-            if not isinstance(content, dict):
-                raise ServiceValidationError("invalid_response")
-            tool_use = content.get("toolUse")
-            if isinstance(tool_use, dict):
-                # Extract the structured data from tool use
-                return json.dumps(tool_use.get("input", {}))
-            # Regular text response
-            return content.get("text", "")
+            return self._parse_message_content(message)
         else:
             # Use traditional IAM credentials with boto3
             response = await self.invoke_bedrock(model=self.model, data=data)
@@ -1983,20 +1970,27 @@ class AWSBedrock(Provider):
             if not isinstance(message, dict):
                 raise ServiceValidationError("invalid_response")
 
-            # Handle tool use response for structured output
-            message_content = message.get("content") or []
-            if not isinstance(message_content, list) or len(message_content) == 0:
-                return ""
+            return self._parse_message_content(message)
 
-            content = message_content[0]
-            if not isinstance(content, dict):
-                raise ServiceValidationError("invalid_response")
-            tool_use = content.get("toolUse")
+    def _parse_message_content(self, message: dict) -> str:
+        """Extract the response from all message content blocks."""
+        message_content = message.get("content") or []
+        if not isinstance(message_content, list) or len(message_content) == 0:
+            return ""
+
+        if not all(isinstance(block, dict) for block in message_content):
+            raise ServiceValidationError("invalid_response")
+
+        # Adaptive-thinking models return a reasoningContent block before the
+        # answer, so loop over all blocks instead of reading only the first
+        for block in message_content:
+            tool_use = block.get("toolUse")
             if isinstance(tool_use, dict):
                 # Extract the structured data from tool use
                 return json.dumps(tool_use.get("input", {}))
-            # Regular text response
-            return content.get("text", "")
+
+        # Regular text response
+        return "".join(block.get("text", "") for block in message_content)
 
     async def invoke_bedrock(self, model: str, data: dict) -> dict:
         """Post data to url and return response data"""

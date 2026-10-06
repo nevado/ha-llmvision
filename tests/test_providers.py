@@ -1118,6 +1118,24 @@ class TestAWSBedrock:
             assert ("temperature" in config) is expects_temperature
 
     @pytest.mark.anyio
+    async def test_returns_answer_after_reasoning_block(self, coverage_hass):
+        """Test the answer is returned when a reasoning block comes first."""
+        message = {
+            "content": [
+                {"reasoningContent": {"reasoningText": {"text": "thinking"}}},
+                {"text": "answer"},
+            ]
+        }
+
+        bearer = AWSBedrock(coverage_hass, "", "", "us-east-1", "m", api_key="k")
+        bearer._post = AsyncMock(return_value={"output": {"message": message}})
+        assert await bearer._make_request({}) == "answer"
+
+        iam = AWSBedrock(coverage_hass, "AK", "SK", "us-east-1", "m")
+        iam.invoke_bedrock = AsyncMock(return_value={"message": message})
+        assert await iam._make_request({}) == "answer"
+
+    @pytest.mark.anyio
     async def test_validate_omits_unsupported_temperature(self, coverage_hass):
         """Test validation omits unsupported temperature."""
         bedrock = AWSBedrock(
